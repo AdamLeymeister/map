@@ -5,10 +5,7 @@ import React, {
   useRef,
   useState,
 } from "react";
-import createPlotlyComponent from "react-plotly.js/factory";
 import Plotly from "plotly.js-dist";
-
-const Plot = createPlotlyComponent(Plotly);
 
 // --------------------------------------------------
 // CONFIGURATION
@@ -21,12 +18,11 @@ const INITIAL_RANGE = {
 
 const RANGE_RINGS = [50, 100, 150];
 
-// Custom SVG marker paths.
-// You can replace these with your own SVG paths.
+// Built-in marker names. plotly.js 1.58.4 does not accept raw SVG paths.
 const SENSOR_SYMBOLS = {
-  r1: "M0 -12 L10 9 L0 4 L-10 9 Z",
-  r2: "M-10 -10 L10 -10 L10 10 L-10 10 Z",
-  r3: "M0 -12 L12 0 L0 12 L-12 0 Z",
+  r1: "triangle-up",
+  r2: "square",
+  r3: "diamond",
 };
 
 // All coordinates are in meters.
@@ -451,6 +447,7 @@ export default function RadarPlot({
   onTimeChange,
 }) {
   const graphRef = useRef(null);
+  const plotQueue = useRef(Promise.resolve());
 
   const [localTime, setLocalTime] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -704,6 +701,42 @@ export default function RadarPlot({
     [],
   );
 
+  const plotConfig = useMemo(
+    () => ({
+      responsive: true,
+      displayModeBar: false,
+      scrollZoom: true,
+    }),
+    [],
+  );
+
+  useEffect(() => {
+    const el = graphRef.current;
+    if (!el) return undefined;
+
+    let active = true;
+
+    plotQueue.current = plotQueue.current
+      .then(() => {
+        if (!active || !graphRef.current) return undefined;
+        return Plotly.react(graphRef.current, traces, layout, plotConfig);
+      })
+      .catch((error) => {
+        if (active) console.error(error);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [traces, layout, plotConfig]);
+
+  useEffect(() => {
+    const el = graphRef.current;
+    return () => {
+      if (el) Plotly.purge(el);
+    };
+  }, []);
+
   // ------------------------------------------------
   // ZOOM CONTROLS
   // ------------------------------------------------
@@ -823,26 +856,7 @@ export default function RadarPlot({
 
       {/* PLOTLY GRAPH */}
 
-      <Plot
-        data={traces}
-        layout={layout}
-        config={{
-          responsive: true,
-          displayModeBar: false,
-          scrollZoom: true,
-        }}
-        useResizeHandler
-        style={{
-          width: "100%",
-          height: 480,
-        }}
-        onInitialized={(_, graph) => {
-          graphRef.current = graph;
-        }}
-        onUpdate={(_, graph) => {
-          graphRef.current = graph;
-        }}
-      />
+      <div ref={graphRef} style={{ width: "100%", height: 480 }} />
 
       {/* DISPLAY OPTIONS */}
 
