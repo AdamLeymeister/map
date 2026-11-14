@@ -15,7 +15,6 @@ import Plotly from "plotly.js-dist";
 // --------------------------------------------------
 
 const VIEW_M = 250;
-const MAX_RANGE = 200;
 const STEP_MS = 200;
 const TRAIL_MS = 2200;
 
@@ -24,7 +23,77 @@ const INITIAL_RANGE = {
   y: [-VIEW_M, VIEW_M],
 };
 
-const RANGE_RINGS = [50, 100, 150, 200];
+function rangesEqual(a, b) {
+  const left = [a.x[0], a.x[1], a.y[0], a.y[1]];
+  const right = [b.x[0], b.x[1], b.y[0], b.y[1]];
+
+  return left.every((value, index) => {
+    const other = right[index];
+    return Math.abs(value - other) <= Math.max(0.05, Math.abs(value) * 0.001);
+  });
+}
+
+function squareRange(range) {
+  const centerX = (range.x[0] + range.x[1]) / 2;
+  const centerY = (range.y[0] + range.y[1]) / 2;
+  let half = Math.max(range.x[1] - range.x[0], range.y[1] - range.y[0]) / 2;
+
+  half = Math.max(20, Math.min(2000, half));
+
+  const round = (value) => Math.round(value * 100) / 100;
+
+  return {
+    x: [round(centerX - half), round(centerX + half)],
+    y: [round(centerY - half), round(centerY + half)],
+  };
+}
+
+function rangeFromRelayout(event, graph) {
+  if (!event) return null;
+
+  if (event["xaxis.autorange"] || event["yaxis.autorange"]) {
+    return INITIAL_RANGE;
+  }
+
+  const full = graph?._fullLayout;
+  const x0 = event["xaxis.range[0]"] ?? event["xaxis.range"]?.[0] ?? full?.xaxis?.range?.[0];
+  const x1 = event["xaxis.range[1]"] ?? event["xaxis.range"]?.[1] ?? full?.xaxis?.range?.[1];
+  const y0 = event["yaxis.range[0]"] ?? event["yaxis.range"]?.[0] ?? full?.yaxis?.range?.[0];
+  const y1 = event["yaxis.range[1]"] ?? event["yaxis.range"]?.[1] ?? full?.yaxis?.range?.[1];
+
+  if (![x0, x1, y0, y1].every((value) => Number.isFinite(value))) {
+    return null;
+  }
+
+  return squareRange({ x: [x0, x1], y: [y0, y1] });
+}
+
+function outerRadius(range) {
+  return (
+    Math.min(
+      Math.abs(range.x[0]),
+      Math.abs(range.x[1]),
+      Math.abs(range.y[0]),
+      Math.abs(range.y[1]),
+    ) * 0.9
+  );
+}
+
+function ringRadii(range) {
+  const outer = outerRadius(range);
+  const rough = outer / 4;
+  const magnitude = 10 ** Math.floor(Math.log10(Math.max(rough, 1e-6)));
+  const residual = rough / magnitude;
+  const nice = residual >= 7.5 ? 10 : residual >= 3.5 ? 5 : residual >= 1.5 ? 2 : 1;
+  const step = nice * magnitude;
+  const rings = [];
+
+  for (let radius = step; radius < outer * 0.98 + step * 0.01; radius += step) {
+    rings.push(Math.round(radius * 1000) / 1000);
+  }
+
+  return rings.length ? rings : [step];
+}
 
 const DEMO_SENSORS = [
   { id: "r1", name: "Radar 1", color: "#3498db", symbol: "circle" },
@@ -184,7 +253,7 @@ function createLine(x, y, color, width = 1.5, dash = "solid") {
   };
 }
 
-function createRing(radius) {
+function createRing(radius, isOuter) {
   const x = [];
   const y = [];
 
@@ -194,32 +263,32 @@ function createRing(radius) {
     y.push(radius * Math.sin(angle));
   }
 
-  return createLine(x, y, radius === MAX_RANGE ? "#475569" : "#334155", 1);
+  return createLine(x, y, isOuter ? "#475569" : "#334155", 1);
 }
 
-function createAzimuthScale() {
+function createAzimuthScale(outer, inner) {
   const x = [];
   const y = [];
 
   for (let deg = 0; deg < 360; deg += 10) {
     const major = deg % 30 === 0;
-    const inner = egoToXY(major ? 44 : MAX_RANGE - 8, deg);
-    const outer = egoToXY(MAX_RANGE, deg);
+    const start = egoToXY(major ? inner : outer * 0.96, deg);
+    const end = egoToXY(outer, deg);
 
-    x.push(inner.x, outer.x, null);
-    y.push(inner.y, outer.y, null);
+    x.push(start.x, end.x, null);
+    y.push(start.y, end.y, null);
   }
 
   return createLine(x, y, "#64748b", 1);
 }
 
-function createAzimuthLabels() {
+function createAzimuthLabels(outer) {
   const x = [];
   const y = [];
   const text = [];
 
   for (let deg = 0; deg < 360; deg += 30) {
-    const point = egoToXY(MAX_RANGE + 18, deg);
+    const point = egoToXY(outer * 0.97, deg);
     x.push(point.x);
     y.push(point.y);
     text.push(`${deg}°`);
@@ -241,12 +310,12 @@ function createAzimuthLabels() {
   };
 }
 
-function createRingLabels() {
+function createRingLabels(radii) {
   const x = [];
   const y = [];
   const text = [];
 
-  for (const radius of RANGE_RINGS) {
+  for (const radius of radii) {
     const point = egoToXY(radius, 100);
     x.push(point.x);
     y.push(point.y);
@@ -269,13 +338,15 @@ function createRingLabels() {
   };
 }
 
-function createCarTraces() {
-  // Top-down car: flat nose, cabin, and wheel bulges. Nose points forward.
+function createCarTraces(lengthM) {
+  // Screen-sized icon. Ring and track coordinates stay in true meters.
+  const scale = lengthM / 64;
+  const sx = (value) => value * scale;
   const body = {
     type: "scatter",
     mode: "lines",
-    x: [0, 10, 10, 16, 16, 10, 10, 16, 16, 10, 10, -10, -10, -16, -16, -10, -10, -16, -16, -10, -10, 0],
-    y: [34, 28, 18, 18, 8, 8, -6, -6, -16, -16, -30, -30, -16, -16, -6, -6, 8, 8, 18, 18, 28, 34],
+    x: [0, 10, 10, 16, 16, 10, 10, 16, 16, 10, 10, -10, -10, -16, -16, -10, -10, -16, -16, -10, -10, 0].map(sx),
+    y: [34, 28, 18, 18, 8, 8, -6, -6, -16, -16, -30, -30, -16, -16, -6, -6, 8, 8, 18, 18, 28, 34].map(sx),
     fill: "toself",
     fillcolor: "#e2e8f0",
     line: {
@@ -289,8 +360,8 @@ function createCarTraces() {
   const cabin = {
     type: "scatter",
     mode: "lines",
-    x: [7, 7, -7, -7, 7],
-    y: [16, -2, -2, 16, 16],
+    x: [7, 7, -7, -7, 7].map(sx),
+    y: [16, -2, -2, 16, 16].map(sx),
     fill: "toself",
     fillcolor: "#38bdf8",
     line: {
@@ -494,10 +565,21 @@ export default function RadarPlot({
   const [showTrails, setShowTrails] = useState(true);
   const [showBearings, setShowBearings] = useState(true);
   const [showAlerts, setShowAlerts] = useState(true);
-
-  const [zoomLabel, setZoomLabel] = useState("100%");
+  const [viewRange, setViewRange] = useState(INITIAL_RANGE);
 
   const timeMs = controlledTime ?? localTime;
+  const onRelayout = useRef(() => {});
+  const applyingRange = useRef(false);
+
+  onRelayout.current = (event) => {
+    if (applyingRange.current) return;
+
+    const next = rangeFromRelayout(event, graphRef.current);
+
+    if (!next) return;
+
+    setViewRange((current) => (rangesEqual(current, next) ? current : next));
+  };
 
   const updateTime = useCallback(
     (next) => {
@@ -553,20 +635,26 @@ export default function RadarPlot({
     return getSnapshot(messages, timeMs);
   }, [messages, timeMs]);
 
+  const radii = useMemo(() => ringRadii(viewRange), [viewRange]);
+  const viewSpan = viewRange.x[1] - viewRange.x[0];
+  const carLength = Math.max(viewSpan * 0.07, 1);
+  const spokeInner = Math.min(carLength * 0.6, outerRadius(viewRange) * 0.35);
+
   const traces = useMemo(() => {
     const result = [];
+    const outer = radii[radii.length - 1];
 
     if (showRings) {
-      for (const radius of RANGE_RINGS) {
-        result.push(createRing(radius));
-      }
+      radii.forEach((radius, index) => {
+        result.push(createRing(radius, index === radii.length - 1));
+      });
 
-      result.push(createRingLabels());
+      result.push(createRingLabels(radii));
     }
 
-    if (showAzimuth) {
-      result.push(createAzimuthScale());
-      result.push(createAzimuthLabels());
+    if (showAzimuth && outer) {
+      result.push(createAzimuthScale(outer, Math.max(spokeInner, outer * 0.08)));
+      result.push(createAzimuthLabels(outer));
     }
 
     for (const detection of snapshot.detections) {
@@ -589,7 +677,10 @@ export default function RadarPlot({
       }
 
       if (showBearings) {
-        const origin = egoToXY(Math.min(40, detection.range), detection.azimuth);
+        const origin = egoToXY(
+          Math.min(spokeInner, detection.range),
+          detection.azimuth,
+        );
         const target = egoToXY(detection.range, detection.azimuth);
 
         result.push(
@@ -610,7 +701,7 @@ export default function RadarPlot({
       result.push(createTrackTrace(sensor, detection));
     }
 
-    result.push(...createCarTraces());
+    result.push(...createCarTraces(carLength));
 
     return result;
   }, [
@@ -621,6 +712,9 @@ export default function RadarPlot({
     showTrails,
     showBearings,
     showAlerts,
+    radii,
+    spokeInner,
+    carLength,
   ]);
 
   const layout = useMemo(
@@ -628,9 +722,9 @@ export default function RadarPlot({
       autosize: true,
       margin: {
         l: 48,
-        r: 24,
-        t: 24,
-        b: 40,
+        r: 48,
+        t: 48,
+        b: 48,
       },
       paper_bgcolor: "#0f172a",
       plot_bgcolor: "#0f172a",
@@ -639,24 +733,22 @@ export default function RadarPlot({
       },
       xaxis: {
         title: "X (meters)",
-        range: INITIAL_RANGE.x,
+        range: viewRange.x,
         gridcolor: "#1e293b",
         zerolinecolor: "#334155",
-        constrain: "domain",
+        fixedrange: false,
       },
       yaxis: {
         title: "Y (meters)",
-        range: INITIAL_RANGE.y,
+        range: viewRange.y,
         gridcolor: "#1e293b",
         zerolinecolor: "#334155",
-        scaleanchor: "x",
-        scaleratio: 1,
+        fixedrange: false,
       },
       showlegend: false,
       hovermode: "closest",
-      uirevision: "radar-view",
     }),
-    [],
+    [viewRange],
   );
 
   const plotConfig = useMemo(
@@ -676,8 +768,27 @@ export default function RadarPlot({
 
     plotQueue.current = plotQueue.current
       .then(() => {
-        if (!active || !graphRef.current) return undefined;
-        return Plotly.react(graphRef.current, traces, layout, plotConfig);
+        const el = graphRef.current;
+
+        if (!active || !el) return undefined;
+
+        applyingRange.current = true;
+
+        return Plotly.react(el, traces, layout, plotConfig)
+          .then(() => {
+            if (!active || !el.on) return;
+
+            if (el._onRange) {
+              el.removeListener("plotly_relayout", el._onRange);
+            }
+
+            const handler = (event) => onRelayout.current(event);
+            el.on("plotly_relayout", handler);
+            el._onRange = handler;
+          })
+          .finally(() => {
+            applyingRange.current = false;
+          });
       })
       .catch((error) => {
         if (active) console.error(error);
@@ -695,39 +806,24 @@ export default function RadarPlot({
     };
   }, []);
 
-  async function zoom(factor) {
-    const graph = graphRef.current;
+  function zoom(factor) {
+    setViewRange((current) => {
+      const centerX = (current.x[0] + current.x[1]) / 2;
+      const centerY = (current.y[0] + current.y[1]) / 2;
+      const half = ((current.x[1] - current.x[0]) * factor) / 2;
 
-    if (!graph?._fullLayout) return;
-
-    const x = graph._fullLayout.xaxis.range;
-    const y = graph._fullLayout.yaxis.range;
-    const centerX = (x[0] + x[1]) / 2;
-    const centerY = (y[0] + y[1]) / 2;
-    const halfWidth = ((x[1] - x[0]) * factor) / 2;
-    const halfHeight = ((y[1] - y[0]) * factor) / 2;
-
-    await Plotly.relayout(graph, {
-      "xaxis.range": [centerX - halfWidth, centerX + halfWidth],
-      "yaxis.range": [centerY - halfHeight, centerY + halfHeight],
+      return squareRange({
+        x: [centerX - half, centerX + half],
+        y: [centerY - half, centerY + half],
+      });
     });
-
-    const originalWidth = INITIAL_RANGE.x[1] - INITIAL_RANGE.x[0];
-    const currentWidth = halfWidth * 2;
-
-    setZoomLabel(`${Math.round((originalWidth / currentWidth) * 100)}%`);
   }
 
-  async function resetZoom() {
-    if (!graphRef.current) return;
-
-    await Plotly.relayout(graphRef.current, {
-      "xaxis.range": [...INITIAL_RANGE.x],
-      "yaxis.range": [...INITIAL_RANGE.y],
-    });
-
-    setZoomLabel("100%");
+  function resetZoom() {
+    setViewRange(INITIAL_RANGE);
   }
+
+  const zoomLabel = `${Math.round(((VIEW_M * 2) / viewSpan) * 100)}%`;
 
   const buttonStyle = {
     background: "#1e293b",
@@ -779,7 +875,10 @@ export default function RadarPlot({
         </div>
       </div>
 
-      <div ref={graphRef} style={{ width: "100%", height: 560 }} />
+      <div
+        ref={graphRef}
+        style={{ width: "min(100%, 680px)", aspectRatio: "1", margin: "0 auto" }}
+      />
 
       <div
         style={{
