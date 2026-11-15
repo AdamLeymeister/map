@@ -1,10 +1,4 @@
-import React, {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import Plotly from "plotly.js-dist";
 
 // --------------------------------------------------
@@ -551,15 +545,11 @@ function createAlertTrace(detection) {
 export default function RadarPlot({
   sensors = DEMO_SENSORS,
   messages = DEMO_MESSAGES,
-  durationMs = 12000,
-  timeMs: controlledTime,
-  onTimeChange,
+  timeMs = 0,
+  children,
 }) {
   const graphRef = useRef(null);
   const plotQueue = useRef(Promise.resolve());
-
-  const [localTime, setLocalTime] = useState(0);
-  const [playing, setPlaying] = useState(false);
 
   const [showRings, setShowRings] = useState(true);
   const [showAzimuth, setShowAzimuth] = useState(true);
@@ -568,7 +558,6 @@ export default function RadarPlot({
   const [showAlerts, setShowAlerts] = useState(true);
   const [viewRange, setViewRange] = useState(INITIAL_RANGE);
 
-  const timeMs = controlledTime ?? localTime;
   const onRelayout = useRef(() => {});
   const applyingRange = useRef(false);
 
@@ -581,52 +570,6 @@ export default function RadarPlot({
 
     setViewRange((current) => (rangesEqual(current, next) ? current : next));
   };
-
-  const updateTime = useCallback(
-    (next) => {
-      const value = Math.max(0, Math.min(durationMs, next));
-
-      if (controlledTime === undefined) {
-        setLocalTime(value);
-      }
-
-      onTimeChange?.(value);
-    },
-    [controlledTime, durationMs, onTimeChange],
-  );
-
-  useEffect(() => {
-    if (!playing) return;
-
-    let frameId;
-    let previousTime;
-
-    function tick(now) {
-      if (previousTime !== undefined) {
-        const delta = now - previousTime;
-        const next = Math.min(durationMs, timeMsRef.current + delta);
-
-        updateTime(next);
-
-        if (next >= durationMs) {
-          setPlaying(false);
-          return;
-        }
-      }
-
-      previousTime = now;
-      frameId = requestAnimationFrame(tick);
-    }
-
-    frameId = requestAnimationFrame(tick);
-
-    return () => {
-      cancelAnimationFrame(frameId);
-    };
-  }, [playing, durationMs, updateTime]);
-
-  const timeMsRef = useRef(timeMs);
-  timeMsRef.current = timeMs;
 
   const sensorById = useMemo(() => {
     return Object.fromEntries(sensors.map((sensor) => [sensor.id, sensor]));
@@ -951,41 +894,7 @@ export default function RadarPlot({
         </label>
       </div>
 
-      <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-        <button
-          style={buttonStyle}
-          onClick={() => {
-            if (timeMs >= durationMs) {
-              updateTime(0);
-            }
-
-            setPlaying((p) => !p);
-          }}>
-          {playing ? "Pause" : "Play"}
-        </button>
-
-        <input
-          type="range"
-          min="0"
-          max={durationMs}
-          step="100"
-          value={timeMs}
-          onChange={(e) => updateTime(Number(e.target.value))}
-          style={{ flex: 1, minWidth: 100 }}
-        />
-
-        <span
-          style={{
-            fontVariantNumeric: "tabular-nums",
-            minWidth: 90,
-            textAlign: "right",
-            fontSize: 13,
-          }}>
-          {(timeMs / 1000).toFixed(1)}
-          {" / "}
-          {(durationMs / 1000).toFixed(1)} s
-        </span>
-      </div>
+      {children}
 
       <div style={{ marginTop: 12, fontSize: 12, color: "#94a3b8" }}>
         On screen: {snapshot.detections.length} of {snapshot.activeCount}
