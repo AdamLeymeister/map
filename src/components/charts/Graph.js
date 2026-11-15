@@ -1,7 +1,6 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { getRecordingMessages } from "../../mockData";
 import Timeline from "../common/Timeline";
+import { useRecording } from "../../hooks/useRecording";
 import RadarPlot from "./Radar";
 
 const START_TIME = 0;
@@ -9,10 +8,7 @@ const END_TIME = 12000;
 
 function RadarPage({ recordingId }) {
   const [timeMs, setTimeMs] = useState(START_TIME);
-  const { data: messages } = useQuery({
-    queryKey: ["radar-messages", recordingId ?? "mock"],
-    queryFn: () => getRecordingMessages(recordingId),
-  });
+  const { data: messages } = useRecording(recordingId);
 
   if (!messages) return null;
 

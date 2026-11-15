@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
 import Box from "@material-ui/core/Box";
 import Typography from "@material-ui/core/Typography";
 import { makeStyles } from "@material-ui/core/styles";
+import { usePlayback } from "../../hooks/usePlayback";
+import { clampTime, formatSeconds } from "../../utils/time";
 
 const useStyles = makeStyles((theme) => ({
   root: {
@@ -41,81 +42,18 @@ const useStyles = makeStyles((theme) => ({
   },
 }));
 
-function formatSeconds(timeMs) {
-  return (timeMs / 1000).toFixed(1);
-}
-
-export default function Timeline({
-  startTime,
-  endTime,
-  value,
-  onChange,
-  step = 100,
-}) {
+export default function Timeline({ startTime, endTime, value, onChange, step = 100 }) {
   const classes = useStyles();
-  const [uncontrolledTime, setUncontrolledTime] = useState(startTime);
-  const [playing, setPlaying] = useState(false);
-  const timeMs = value ?? uncontrolledTime;
-  const timeMsRef = useRef(timeMs);
-  timeMsRef.current = timeMs;
-
-  const setTime = useCallback(
-    (next) => {
-      const clamped = Math.max(startTime, Math.min(endTime, next));
-
-      if (value === undefined) {
-        setUncontrolledTime(clamped);
-      }
-
-      onChange?.(clamped);
-    },
-    [startTime, endTime, value, onChange],
-  );
-
-  useEffect(() => {
-    if (!playing) return undefined;
-
-    let frameId;
-    let previousTime;
-
-    function tick(now) {
-      if (previousTime !== undefined) {
-        const next = Math.min(endTime, timeMsRef.current + (now - previousTime));
-        setTime(next);
-
-        if (next >= endTime) {
-          setPlaying(false);
-          return;
-        }
-      }
-
-      previousTime = now;
-      frameId = requestAnimationFrame(tick);
-    }
-
-    frameId = requestAnimationFrame(tick);
-
-    return () => cancelAnimationFrame(frameId);
-  }, [playing, endTime, setTime]);
+  const { timeMs, setTime, playing, togglePlay } = usePlayback({
+    startTime,
+    endTime,
+    value,
+    onChange,
+  });
 
   return (
     <Box className={classes.root}>
-      <button
-        type="button"
-        className={classes.play}
-        onClick={() => {
-          setPlaying((current) => {
-            const nextPlaying = !current;
-
-            if (nextPlaying && timeMsRef.current >= endTime) {
-              timeMsRef.current = startTime;
-              setTime(startTime);
-            }
-
-            return nextPlaying;
-          });
-        }}
-      >
+      <button type="button" className={classes.play} onClick={togglePlay}>
         {playing ? "Pause" : "Play"}
       </button>
       <input
@@ -124,7 +62,7 @@ export default function Timeline({
         min={startTime}
         max={endTime}
         step={step}
-        value={Math.min(endTime, Math.max(startTime, timeMs))}
+        value={clampTime(timeMs, startTime, endTime)}
         onChange={(event) => setTime(Number(event.target.value))}
         aria-label="Timeline"
       />
