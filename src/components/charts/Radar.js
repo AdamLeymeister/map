@@ -15,7 +15,7 @@ import Plotly from "plotly.js-dist";
 // --------------------------------------------------
 
 const VIEW_M = 250;
-const STEP_MS = 200;
+const SAMPLE_MS = 1000;
 const TRAIL_MS = 2200;
 
 const INITIAL_RANGE = {
@@ -105,115 +105,73 @@ function lerp(start, end, amount) {
   return start + (end - start) * amount;
 }
 
-function movingTrack({ radarId, trackId, startMs, endMs, rangeAt, azimuthAt }) {
-  const messages = [];
-  const span = Math.max(1, endMs - startMs);
+function timeStamps(first, last, step = SAMPLE_MS) {
+  const stamps = [];
 
-  for (let timestamp = startMs; timestamp <= endMs; timestamp += STEP_MS) {
-    const amount = (timestamp - startMs) / span;
-
-    messages.push({
-      id: `${radarId}-${trackId}-${timestamp}`,
-      timestamp,
-      messageType: "DETECTION",
-      trackId,
-      body: {
-        range: rangeAt(amount),
-        azimuth: azimuthAt(amount),
-      },
-    });
+  for (let timestamp = first; timestamp <= last; timestamp += step) {
+    stamps.push(timestamp);
   }
 
-  messages.push({
-    id: `${radarId}-${trackId}-end`,
-    timestamp: endMs + STEP_MS,
-    messageType: "TRACK_END",
-    trackId,
-    body: {},
+  if (stamps[stamps.length - 1] !== last) {
+    stamps.push(last);
+  }
+
+  return stamps;
+}
+
+// Each message is one reading: a time, a range, and an azimuth.
+// Nothing in the message says when a track starts or ends.
+function detectionSamples({ radarId, trackId, stamps, rangeAt, azimuthAt, severityAt }) {
+  const span = Math.max(1, stamps[stamps.length - 1] - stamps[0]);
+
+  return stamps.map((timestamp) => {
+    const amount = (timestamp - stamps[0]) / span;
+    const sample = {
+      id: `${radarId}-${trackId}-${timestamp}`,
+      timestamp,
+      trackId,
+      range: rangeAt(amount),
+      azimuth: azimuthAt(amount),
+    };
+    const severity = severityAt?.(amount);
+
+    if (severity) sample.severity = severity;
+
+    return sample;
   });
-
-  return messages;
 }
 
-function withEvents(samples, events) {
-  return [...samples, ...events].sort((a, b) => a.timestamp - b.timestamp);
-}
-
-// Tracks are range/azimuth from the car. Each one starts at a
-// different time, moves, then drops so targets come and go.
 const DEMO_MESSAGES = {
-  r1: withEvents(
-    [
-      ...movingTrack({
-        radarId: "r1",
-        trackId: 101,
-        startMs: 0,
-        endMs: 6400,
-        rangeAt: (amount) => lerp(210, 36, amount),
-        azimuthAt: (amount) => lerp(-18, -58, amount),
-      }),
-      ...movingTrack({
-        radarId: "r1",
-        trackId: 104,
-        startMs: 1600,
-        endMs: 4300,
-        rangeAt: (amount) => lerp(150, 78, amount),
-        azimuthAt: (amount) => lerp(-120, 28, amount),
-      }),
-    ],
-    [
-      {
-        id: "r1-101-alert",
-        timestamp: 2200,
-        messageType: "TRACK_ALERT",
-        trackId: 101,
-        body: { severity: "HIGH" },
-      },
-      {
-        id: "r1-101-clear",
-        timestamp: 5200,
-        messageType: "ALERT_CLEAR",
-        trackId: 101,
-        body: {},
-      },
-    ],
-  ),
-
-  r2: withEvents(
-    movingTrack({
-      radarId: "r2",
-      trackId: 202,
-      startMs: 2000,
-      endMs: 9000,
-      rangeAt: (amount) =>
-        amount < 0.5
-          ? lerp(190, 48, amount / 0.5)
-          : lerp(48, 230, (amount - 0.5) / 0.5),
-      azimuthAt: (amount) => lerp(35, 128, amount),
+  r1: [
+    ...detectionSamples({
+      radarId: "r1",
+      trackId: 101,
+      stamps: timeStamps(0, 6400),
+      rangeAt: (amount) => lerp(210, 36, amount),
+      azimuthAt: (amount) => lerp(-18, -58, amount),
+      severityAt: (amount) => (amount >= 0.34 && amount <= 0.8 ? "HIGH" : null),
     }),
-    [
-      {
-        id: "r2-202-alert",
-        timestamp: 5000,
-        messageType: "TRACK_ALERT",
-        trackId: 202,
-        body: { severity: "MEDIUM" },
-      },
-      {
-        id: "r2-202-clear",
-        timestamp: 6800,
-        messageType: "ALERT_CLEAR",
-        trackId: 202,
-        body: {},
-      },
-    ],
-  ),
-
-  r3: movingTrack({
+    ...detectionSamples({
+      radarId: "r1",
+      trackId: 104,
+      stamps: timeStamps(1600, 4300),
+      rangeAt: (amount) => lerp(150, 78, amount),
+      azimuthAt: (amount) => lerp(-120, 28, amount),
+    }),
+  ],
+  r2: detectionSamples({
+    radarId: "r2",
+    trackId: 202,
+    stamps: timeStamps(2000, 9000),
+    rangeAt: (amount) =>
+      amount < 0.5 ? lerp(190, 48, amount / 0.5) : lerp(48, 230, (amount - 0.5) / 0.5),
+    azimuthAt: (amount) => lerp(35, 128, amount),
+    severityAt: (amount) => (amount >= 0.42 && amount <= 0.68 ? "MEDIUM" : null),
+  }),
+  r3: detectionSamples({
     radarId: "r3",
     trackId: 303,
-    startMs: 4800,
-    endMs: 10800,
+    stamps: timeStamps(4800, 10800),
     rangeAt: (amount) => lerp(42, 230, amount),
     azimuthAt: (amount) => lerp(175, 205, amount),
   }),
@@ -376,106 +334,148 @@ function createCarTraces(lengthM) {
 }
 
 // --------------------------------------------------
-// TIMELINE SNAPSHOT
+// MESSAGE INDEX
 //
-// Detections are interpolated between samples so a
-// track slides instead of jumping. TRACK_END drops it.
+// Samples are sorted once. Playback binary-searches
+// the update surrounding the playhead and only keeps
+// positions inside the current view.
 // --------------------------------------------------
 
-function getSnapshot(messagesByRadar, timeMs) {
+function messageGroups(messages) {
+  if (Array.isArray(messages)) return [["track", messages]];
+  return Object.entries(messages || {});
+}
+
+function indexMessages(messages) {
   const tracks = new Map();
 
-  function ensure(radarId, trackId) {
-    const key = `${radarId}:${trackId}`;
-    let track = tracks.get(key);
+  for (const [radarId, group] of messageGroups(messages)) {
+    if (!Array.isArray(group)) continue;
 
-    if (!track) {
-      track = {
-        key,
-        radarId,
-        trackId,
-        samples: [],
-        ended: false,
-        alert: null,
-      };
-      tracks.set(key, track);
-    }
+    for (const msg of group) {
+      if (msg?.trackId == null) continue;
+      if (msg.messageType && msg.messageType !== "DETECTION") continue;
 
-    return track;
-  }
+      const range = msg.range ?? msg.body?.range;
+      const azimuth = msg.azimuth ?? msg.body?.azimuth;
 
-  for (const [radarId, messages] of Object.entries(messagesByRadar || {})) {
-    if (!Array.isArray(messages)) continue;
-
-    const ordered = [...messages].sort((a, b) => a.timestamp - b.timestamp);
-
-    for (const msg of ordered) {
-      if (msg.trackId == null) continue;
-
-      const track = ensure(radarId, msg.trackId);
-
-      if (msg.messageType === "DETECTION") {
-        track.samples.push(msg);
+      if (!Number.isFinite(msg.timestamp) || !Number.isFinite(range) || !Number.isFinite(azimuth)) {
         continue;
       }
 
-      if (msg.timestamp > timeMs) continue;
+      const key = `${radarId}:${msg.trackId}`;
+      let track = tracks.get(key);
 
-      if (msg.messageType === "TRACK_END") {
-        track.ended = true;
-      } else if (msg.messageType === "TRACK_ALERT") {
-        track.alert = msg;
-      } else if (msg.messageType === "ALERT_CLEAR") {
-        track.alert = null;
+      if (!track) {
+        track = { radarId, trackId: msg.trackId, samples: [] };
+        tracks.set(key, track);
       }
+
+      track.samples.push({
+        timestamp: msg.timestamp,
+        range,
+        azimuth,
+        severity: msg.severity ?? msg.body?.severity ?? null,
+      });
     }
   }
 
-  const detections = [];
-
   for (const track of tracks.values()) {
-    if (track.ended || !track.samples.length) continue;
-
     track.samples.sort((a, b) => a.timestamp - b.timestamp);
+  }
 
-    let prevIndex = -1;
+  return tracks;
+}
 
-    for (let i = 0; i < track.samples.length; i++) {
-      if (track.samples[i].timestamp <= timeMs) prevIndex = i;
-      else break;
-    }
+// First index whose timestamp is greater than timeMs.
+function upperBound(samples, timeMs) {
+  let low = 0;
+  let high = samples.length;
+
+  while (low < high) {
+    const mid = (low + high) >> 1;
+
+    if (samples[mid].timestamp <= timeMs) low = mid + 1;
+    else high = mid;
+  }
+
+  return low;
+}
+
+// First index whose timestamp is greater than or equal to timeMs.
+function lowerBound(samples, timeMs) {
+  let low = 0;
+  let high = samples.length;
+
+  while (low < high) {
+    const mid = (low + high) >> 1;
+
+    if (samples[mid].timestamp < timeMs) low = mid + 1;
+    else high = mid;
+  }
+
+  return low;
+}
+
+function isOnScreen(x, y, viewRange) {
+  const padX = (viewRange.x[1] - viewRange.x[0]) * 0.02;
+  const padY = (viewRange.y[1] - viewRange.y[0]) * 0.02;
+
+  return (
+    x >= viewRange.x[0] - padX &&
+    x <= viewRange.x[1] + padX &&
+    y >= viewRange.y[0] - padY &&
+    y <= viewRange.y[1] + padY
+  );
+}
+
+function isInView(x, y, range, viewRange) {
+  return isOnScreen(x, y, viewRange) || range <= outerRadius(viewRange);
+}
+
+function getSnapshot(trackIndex, timeMs, viewRange) {
+  const detections = [];
+  let activeCount = 0;
+
+  for (const track of trackIndex.values()) {
+    const samples = track.samples;
+    const nextIndex = upperBound(samples, timeMs);
+    const prevIndex = nextIndex - 1;
 
     if (prevIndex < 0) continue;
 
-    const prev = track.samples[prevIndex];
-    const next = track.samples[prevIndex + 1];
-    let range = prev.body?.range;
-    let azimuth = prev.body?.azimuth;
+    const prev = samples[prevIndex];
+    const next = samples[nextIndex];
 
-    if (!Number.isFinite(range) || !Number.isFinite(azimuth)) continue;
+    if (!next && timeMs > prev.timestamp) continue;
 
-    if (
-      next &&
-      next.timestamp > prev.timestamp &&
-      Number.isFinite(next.body?.range) &&
-      Number.isFinite(next.body?.azimuth)
-    ) {
-      const amount =
-        (timeMs - prev.timestamp) / (next.timestamp - prev.timestamp);
-      range = lerp(range, next.body.range, amount);
-      azimuth = lerpAngle(azimuth, next.body.azimuth, amount);
+    activeCount += 1;
+
+    let range = prev.range;
+    let azimuth = prev.azimuth;
+
+    if (next && next.timestamp > prev.timestamp) {
+      const amount = (timeMs - prev.timestamp) / (next.timestamp - prev.timestamp);
+      range = lerp(range, next.range, amount);
+      azimuth = lerpAngle(azimuth, next.azimuth, amount);
     }
+
+    const head = egoToXY(range, azimuth);
+
+    if (!isInView(head.x, head.y, range, viewRange)) continue;
 
     const trail = [];
+    const trailStart = lowerBound(samples, timeMs - TRAIL_MS);
 
-    for (let i = 0; i <= prevIndex; i++) {
-      const sample = track.samples[i];
-      if (sample.timestamp < timeMs - TRAIL_MS) continue;
-      if (!Number.isFinite(sample.body?.range)) continue;
-      trail.push(egoToXY(sample.body.range, sample.body.azimuth));
+    for (let i = trailStart; i <= prevIndex; i++) {
+      const point = egoToXY(samples[i].range, samples[i].azimuth);
+
+      if (isInView(point.x, point.y, samples[i].range, viewRange)) {
+        trail.push(point);
+      }
     }
 
-    trail.push(egoToXY(range, azimuth));
+    trail.push(head);
 
     detections.push({
       radarId: track.radarId,
@@ -483,13 +483,14 @@ function getSnapshot(messagesByRadar, timeMs) {
       range,
       azimuth,
       trail,
-      alert: track.alert,
+      severity: prev.severity,
     });
   }
 
   return {
     detections,
-    alerts: detections.filter((detection) => detection.alert),
+    activeCount,
+    alerts: detections.filter((detection) => detection.severity),
   };
 }
 
@@ -523,7 +524,7 @@ function createTrackTrace(sensor, detection) {
 
 function createAlertTrace(detection) {
   const point = egoToXY(detection.range, detection.azimuth);
-  const severity = detection.alert?.body?.severity || "UNKNOWN";
+  const severity = detection.severity || "UNKNOWN";
 
   return {
     type: "scatter",
@@ -631,9 +632,11 @@ export default function RadarPlot({
     return Object.fromEntries(sensors.map((sensor) => [sensor.id, sensor]));
   }, [sensors]);
 
+  const trackIndex = useMemo(() => indexMessages(messages), [messages]);
+
   const snapshot = useMemo(() => {
-    return getSnapshot(messages, timeMs);
-  }, [messages, timeMs]);
+    return getSnapshot(trackIndex, timeMs, viewRange);
+  }, [trackIndex, timeMs, viewRange]);
 
   const radii = useMemo(() => ringRadii(viewRange), [viewRange]);
   const viewSpan = viewRange.x[1] - viewRange.x[0];
@@ -694,7 +697,7 @@ export default function RadarPlot({
         );
       }
 
-      if (showAlerts && detection.alert) {
+      if (showAlerts && detection.severity) {
         result.push(createAlertTrace(detection));
       }
 
@@ -985,9 +988,9 @@ export default function RadarPlot({
       </div>
 
       <div style={{ marginTop: 12, fontSize: 12, color: "#94a3b8" }}>
-        Active tracks: {snapshot.detections.length}
+        On screen: {snapshot.detections.length} of {snapshot.activeCount}
         {" | "}
-        Active alerts: {snapshot.alerts.length}
+        Alerts: {snapshot.alerts.length}
       </div>
     </div>
   );
