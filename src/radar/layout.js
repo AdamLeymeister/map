@@ -1,3 +1,5 @@
+import { jetLayoutImage } from "./jetIcon";
+
 export const radarPlotConfig = {
   responsive: true,
   displayModeBar: false,
@@ -29,5 +31,6 @@ export function buildRadarLayout(viewRange) {
     },
     showlegend: false,
     hovermode: "closest",
+    images: [jetLayoutImage(viewRange)],
   };
 }

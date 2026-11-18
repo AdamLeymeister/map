@@ -1,5 +1,6 @@
 import { egoToXY } from "./coordinates";
 import { outerRadius, ringRadii } from "./geometry";
+import { egoIconLength } from "./jetIcon";
 
 export function createLine(x, y, color, width = 1.5, dash = "solid") {
   return {
@@ -92,33 +93,19 @@ export function createRingLabels(radii) {
   };
 }
 
-export function createCarTraces(lengthM) {
-  const scale = lengthM / 64;
-  const sx = (value) => value * scale;
-  const body = {
+function createEgoHover() {
+  return {
     type: "scatter",
-    mode: "lines",
-    x: [0, 10, 10, 16, 16, 10, 10, 16, 16, 10, 10, -10, -10, -16, -16, -10, -10, -16, -16, -10, -10, 0].map(sx),
-    y: [34, 28, 18, 18, 8, 8, -6, -6, -16, -16, -30, -30, -16, -16, -6, -6, 8, 8, 18, 18, 28, 34].map(sx),
-    fill: "toself",
-    fillcolor: "#e2e8f0",
-    line: { color: "#38bdf8", width: 2 },
+    mode: "markers",
+    x: [0],
+    y: [0],
+    marker: {
+      size: 36,
+      color: "rgba(226, 232, 240, 0.01)",
+    },
     hovertemplate: "Ego vehicle<extra></extra>",
     showlegend: false,
   };
-  const cabin = {
-    type: "scatter",
-    mode: "lines",
-    x: [7, 7, -7, -7, 7].map(sx),
-    y: [16, -2, -2, 16, 16].map(sx),
-    fill: "toself",
-    fillcolor: "#38bdf8",
-    line: { color: "#0284c7", width: 1 },
-    hoverinfo: "skip",
-    showlegend: false,
-  };
-
-  return [body, cabin];
 }
 
 export function createTrackTrace(sensor, detection) {
@@ -178,9 +165,8 @@ export function buildRadarTraces({ snapshot, sensorById, viewRange, layers }) {
   const result = [];
   const radii = ringRadii(viewRange);
   const outer = radii[radii.length - 1];
-  const viewSpan = viewRange.x[1] - viewRange.x[0];
-  const carLength = Math.max(viewSpan * 0.07, 1);
-  const spokeInner = Math.min(carLength * 0.6, outerRadius(viewRange) * 0.35);
+  const egoLength = egoIconLength(viewRange);
+  const spokeInner = Math.min(egoLength * 0.6, outerRadius(viewRange) * 0.35);
 
   if (layers.rings) {
     radii.forEach((radius, index) => {
@@ -222,7 +208,7 @@ export function buildRadarTraces({ snapshot, sensorById, viewRange, layers }) {
     result.push(createTrackTrace(sensor, detection));
   }
 
-  result.push(...createCarTraces(carLength));
+  result.push(createEgoHover());
 
   return result;
 }
